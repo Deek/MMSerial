@@ -1,0 +1,7 @@
+MMMPI	set 1
+Level	set 2
+H6309	set 1
+	use os9.d
+	use scf.d
+	use coco.d
+H6309	set 0
