@@ -1,0 +1,54 @@
+/* [wxMaxima batch file version 1] [ DO NOT EDIT BY HAND! ]*/
+/* [ Created with wxMaxima version 20.12.1 ] */
+/* [wxMaxima: title   start ]
+UART Baud Rate Worksheet
+   [wxMaxima: title   end   ] */
+
+
+/* [wxMaxima: comment start ]
+Calculations for various crystals to be used for UART purposes:
+   [wxMaxima: comment end   ] */
+
+
+/* [wxMaxima: input   start ] */
+rates:[110,300,600,1200,2400,4800,9600,19200,38400,57600,115200,230400,460800,921600,1843200,31250]$
+divs(x) := x / 16 / rates$
+hex(x) := printf(false, "[ ~{~x~^, ~} ]", round(x))$
+
+/* [wxMaxima: input   end   ] */
+
+
+/* [wxMaxima: input   start ] */
+xtal:18432000$  /* Speed of Fast232 crystal */
+divs(x), x:xtal, eval; /* Divisors for target baud rates */
+%,numer;    /* Decimal form of same */
+round(%);   /* Nearest integer divisor */
+hex(x), x:%, numer, eval;   /* hex values */
+/*xtal/16/%, numer; /* Actual baud rates acheived by nearest integer */
+
+/* [wxMaxima: input   end   ] */
+
+
+/* [wxMaxima: input   start ] */
+xtal:29491200$  /* Speed of MMMPI crystal */
+divs(x), x:xtal, eval; /* Divisors for target baud rates */
+%,numer;    /* Decimal form of same */
+round(%);   /* Nearest integer divisor */
+hex(x), x:%, numer, eval;   /* hex values */
+/*xtal/16/%, numer; /* Actual baud rates acheived by nearest integer */
+/* [wxMaxima: input   end   ] */
+
+
+/* [wxMaxima: input   start ] */
+xtal:1843200$  /* Speed of PC crystal */
+divs(x), x:xtal,rates:[110,300,600,1200,2400,4800,9600,19200,38400,57600,115200,31250], eval; /* Divisors for target baud rates */
+%,numer;    /* Decimal form of same */
+round(%);   /* Nearest integer divisor */
+hex(x), x:%, numer, eval;   /* hex values */
+/*xtal/16/%; /* Actual baud rates acheived by nearest integer */
+/* [wxMaxima: input   end   ] */
+
+
+
+/* Old versions of Maxima abort on loading files that end in a comment. */
+"Created with wxMaxima 20.12.1"$
