@@ -1,0 +1,144 @@
+                          S16550 specs:     
+S16550  is a fully buffered and interupt driven driver.  The transmit 
+buffer is approx. 180 bytes. The recieve buffer is user adjustable  from  
+256 to 3840 bytes. The driver is based  on  the Level  2  addition  of the 
+Suspend control (see tech  manual,  pp4-13/14) rather than the old sleep-n-signal.
+
+The  driver/descriptor for Fast232 conforms fully to  Aciapak with the 
+following additions and exceptions (Note most additions conform to the SACIA 
+defacto standard) 
+
+Descriptor changes:
+
+It.Bau (Offset $27) - standard stop and length apply
+Value bits 3-0 select the baud rate where:
+     Value    Normal      Alternate (see bit 4 of It.Xtp)
+      0          110       38400
+      1          300       57600
+      2          600       76800
+      3         1200      115200
+      4         2400        2400
+      5         4800        4800
+      6         9600        9600
+      7        19200       19200
+      8        38400         na
+      9        57600         na
+      A        76800         na
+      B       115200         na
+      C     undefined        na
+      D     undefined        na
+      E     undefined        na
+      F        31125         na   Baud  value  $F is currently set to 31125, the closest
+                                  possible to midi with the Fast232 clock. 
+
+It.Par (offset $26) - standard parity settings apply
+    bit 3  enables software flow control for the reciever.
+    bit 2  enables software flow control for the transmitter.
+    bit 1  enables bi-directional hardware flow control via RTS/CTS.
+    bit 0  enables bi-directional hardware flow control via DTR/DSR.
+
+It.Xtp (offset $2E) Additional init flags
+    bit 7  unused
+    bit 6  unused
+    bit 5  unused
+    bit 4  When set, selects the alternate baud rate table
+    bit3-0 Selects the number of pages (256 byte / page) used for the
+           recieve buffer. Valid numbers are $01-$0F (256 - 3840)                            
+
+Driver additions:  
+
+=====  GetStt  ======
+
+SS.Ready  returns  the number of bytes ready in register  B.  If
+   $01    none are waiting (b=0), it returns E$NotRdy. Since reg
+          B is 8 bit, that range is 1 to 255 max.
+
+SS.Comst  returns  Pd.Typ and PD.Bau in reg Y. in addition,  it
+   $28    returns DCD and DSR status in Reg B, per SAcia.  DCD=
+          bit  5,  DSR  = bit 6. For compatabliliity,  they  are
+          returned  6551 style; inverted. Bit set means the line
+          is in the False state.
+
+SS.WrtBf  returns  interesting stats about the transmit  buffer.
+   $C1    Reg  X  contains the buffer size, Reg Y  contains  the
+          current fullness (number waiting to be sent), and Reg B
+          indicates  the status of flow control. If B=0, no  flow
+          control.   If B<>0 then flow control has been requested
+          and the transmitter is off.
+
+SS.BlkRd  Acts  like  SS.Ready  if there  is  no  data  waiting.
+   $D0    (E$NotRdy  returned) Acts like a SS.Read  (kinda)  if
+          data  is  present. It will return the number  of  bytes
+          requested,  or  the  number available,  which  ever  is
+          smaller.   It will *never* go into suspend state.  This
+          call  copies data from the driver's buffer directly  to
+          your buffer, bypassing SCF.  Note that the use of BlkRd
+          eliminates the need for a seperate SS.Ready.
+                Entry     A = path
+                          X = pointer to buffer
+                          Y = maximum nuber of bytes to transfer
+                Exit      X = pointer to buffer
+                          Y = number of bytes moved (Y<>0)
+                Errors    B = E$NotRdy or E$Read
+
+SS.DvrID  returns a few predined constants. So far:
+   $D2
+          reg X
+           0 = supports SS.hangup ala SAcia and s16550
+           1 = supports SS.Break ala sacia
+           2 = supports signal on DCD change
+           3-7 undefined
+           8 = has ss.blkrd
+           9 = has ss.blkwr
+           a = has tx-flush
+           b-f undefined
+                reg b contains bitmapped driver/chip type
+                  0 = 6551
+                  1 = 6552
+                  2 = 1655x
+
+                reg Y contains the driver id number
+                reg A the lower 4 bits contain the max baud rate number.
+                      Not  the  number  of baud rates,  but  the  highest
+                      allowable number (currently $b)
+
+                                
+===== SetStt ======
+
+SS.HngUp  Forces modem hangup by dropping DTR for 0.5 second
+   $2B 
+
+SS.Break  Forces a break (long space) to be transmitted for  0.5
+   $1D    sec.  Before  setting  the  long  space,  it  flushes
+          (discards) the contents of the transmit buffer.
+
+SS.TxFlR  Clears transmitter software flow control. Meant to  be
+   $C2    used  by BBS to ensure a clear port reset when DCD  is
+          lost.
+
+SS.CDSig  Used to request a signal to be sent on any change of DCD
+   $9A    state.
+
+SS.CDRel  Releases SS.CDSig.
+   $9B 
+
+SS.TxFlh  Flushes (discards) the transmit buffer contents. Meant to
+   $C3    be   used   by  BBS' to  gain  faster  hotkey   response,
+          overcoming the lag induced by the Tx buffer.
+
+SS.BlkWr  Moves data from the callers specified buffer directly into
+   $D1    the  transmit buffer. It will Suspend  if necessary  until
+          sufficient room is available to move all of the data.
+                  Entry A = path
+                        X = buffer pointer
+                        Y = number of bytes to move
+
+All calls are available in all editions of the drivers, except:     
+ 
+       SS.BlkRd and SS.BlkWr are only in the full version.
+       SS.WrtBf,  SS.TxFRl, and SS.TxFlh are currently in the  full
+version. These are calls I wished for many years ago when writing
+some BBS software. They will be removed from the next editions to
+save  space,  but  will  continue to be documented,  and  can  be
+re-enabled with a simple change to a ifdef.
+ple change to a ifdef.

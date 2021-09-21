@@ -5,6 +5,9 @@ all: mmmpi.serial
 s16550: s16550_large.asm defsfile
 	lwasm $(AFLAGS) -l$@.list -o$@ $<
 
+s16550.12: s16550short_os9.asm defsfile
+	lwasm $(AFLAGS) -l$@.list -o$@ $<
+
 t2_s16550.dd: t2.asm tx_s16550.a
 	lwasm $(AFLAGS) -o$@ $<
 
