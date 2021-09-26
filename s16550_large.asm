@@ -59,12 +59,11 @@ u0029    rmb   1
 u002A    rmb   2
 u002C    rmb   2
 u002E    rmb   2
-RxBufEnd    rmb   2
-u0032    rmb   2
-u0034    rmb   1
-u0035    rmb   1
-RxBufSiz    rmb   2
-OutNxt   rmb   2
+RxBufEnd    rmb   2	Receive Buffer Highest Address
+RxBufSta    rmb   2	Receive Buffer Lowest Address
+RxBufCnt    rmb   2	Number of chars in receive buffer
+RxBufSiz    rmb   2	Size of receive buffer
+OutNxt      rmb   2	Address used for next Write
 TxBufPos    rmb   2	Transmit Buffer Current Position
 TxBufEnd    rmb   2	Transmit Buffer Highest Address
 TxBufSta    rmb   2	Transmit Buffer Lowest Address
@@ -142,7 +141,7 @@ L0061    clrb
          rts   
 
 * D = size of allocated buffer in bytes
-L0087    stx   <u0032		store buffer start in several pointers
+L0087    stx   <RxBufSta		store buffer start in several pointers
          stx   <u002C
          stx   <u002E
          std   <RxBufSiz
@@ -171,8 +170,8 @@ L00A3    pshs  b,a
          stx   <TxBufEnd
          ldd   #(size-TxBuffer)
          std   <TxBufSiz
-         clr   <u0034
-         clr   <u0035
+         clr   <RxBufCnt
+         clr   <RxBufCnt+1
          clr   <TxBufCnt
          ldd   <IT.PAR,y
          std   <Wrk.Type
@@ -243,14 +242,14 @@ Read     clrb
          pshs  dp,b,cc
          lbsr  GetDP
          orcc  #IntMasks	interrupts off
-         ldd   <u0034		rx buffer count?
+         ldd   <RxBufCnt		rx buffer count?
          beq   L0169		nothing waiting, go punt
          cmpd  #16		is buffer count 16?
          lbne  L018F		no, go receive
          andcc #^IntMasks
          bsr   L01BD
 L0163    orcc  #IntMasks
-         ldd   <u0034
+         ldd   <RxBufCnt
          bne   L018F
 L0169    lbsr  Sleeper		go to sleep
          ldx   >D.Proc		we're back! Check on the process
@@ -273,12 +272,12 @@ L018A    puls  dp,a,cc
          rts   
 
 L018F    subd  #1
-         std   <u0034
+         std   <RxBufCnt
          ldx   <u002E
          lda   ,x+
          cmpx  <RxBufEnd
          bne   L019E
-         ldx   <u0032
+         ldx   <RxBufSta
 L019E    stx   <u002E
          andcc #^IntMasks
          ldb   <V.ERR
@@ -361,7 +360,7 @@ GetStat  clrb
          lbsr  GetDP
          cmpa  #SS.Ready
          bne   L0226
-         ldd   <u0034
+         ldd   <RxBufCnt
          beq   L021E
          tsta  
          beq   L0217
@@ -416,9 +415,9 @@ L026F    cmpa  #$D0
          orcc  #IntMasks
          ldd   <RxBufEnd
          subd  <u002E
-         cmpd  <u0034
+         cmpd  <RxBufCnt
          bcs   L0288
-         ldd   <u0034
+         ldd   <RxBufCnt
          beq   L021E
 L0288    andcc #^IntMasks
          ldu   PD.RGS,y
@@ -440,9 +439,9 @@ L0293    std   R$Y,u
          puls  u,y,x
          orcc  #IntMasks
          os9   F$Move   
-         ldd   <u0034
+         ldd   <RxBufCnt
          subd  ,s
-         std   <u0034
+         std   <RxBufCnt
          andcc #^IntMasks
          cmpd  #$0010
          bhi   L02CD
@@ -455,7 +454,7 @@ L02CD    puls  b,a
          leax  d,x
          cmpx  <RxBufEnd
          bne   L02D9
-         ldx   <u0032
+         ldx   <RxBufSta
 L02D9    stx   <u002E
 L02DB    bra   L0316
 L02DD    cmpa  #$D2
@@ -678,7 +677,7 @@ L04A7    cmpa  #$1A
          ldy   $06,y
          ldb   $07,y
          orcc  #IntMasks
-         ldx   <u0034
+         ldx   <RxBufCnt
          bne   L04BD
          std   <u0025
          lbra  L0543
@@ -756,8 +755,8 @@ Term     clrb
          orcc  #IntMasks
          clra  
          clrb  
-         std   <u0034
-         ldx   <u0032
+         std   <RxBufCnt
+         ldx   <RxBufSta
          stx   <u002C
          stx   <u002E
          pshs  x,b,a
@@ -780,7 +779,7 @@ L0576    orcc  #IntMasks
          ldd   $02,s
          std   <u002C
          ldd   ,s
-         std   <u0034
+         std   <RxBufCnt
          bra   L0566
 L0585    leas  $04,s
          clr   $01,x
@@ -788,7 +787,7 @@ L0585    leas  $04,s
          andcc #^IntMasks
          ldd   <RxBufSiz
          pshs  u
-         ldu   <u0032
+         ldu   <RxBufSta
          os9   F$SRtMem 
          puls  u
          ldx   #$0000
@@ -912,23 +911,24 @@ L066B    cmpa  <V.XON
          lbeq  L070A
 L0679    pshs  b
          sta   ,x+
-         cmpx  <RxBufEnd
-         bne   L0683
-         ldx   <u0032
-L0683    cmpx  <u002E
-         bne   L0697
-         ldb   #$02
+         cmpx  <RxBufEnd	reached end of buffer?
+         bne   L0683		no, keep going
+         ldx   <RxBufSta	yes, go back to start
+L0683    cmpx  <u002E		reached read pointer?
+         bne   L0697		no, keep going
+* 6309:  oim #%00000010;<V.ERR
+         ldb   #$02		set bit 1 in error accumulator
          orb   <V.ERR
          stb   <V.ERR
-         cmpx  <u0032
+         cmpx  <RxBufSta
          bne   L0693
          ldx   <RxBufEnd
 L0693    leax  -1,x
          bra   L06A5
 L0697    stx   <u002C
-         ldd   <u0034
-         addd  #$0001
-         std   <u0034
+         ldd   <RxBufCnt
+         addd  #1
+         std   <RxBufCnt
          cmpd  <u002A
          beq   L06A7
 L06A5    puls  pc,b
