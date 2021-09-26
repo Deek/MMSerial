@@ -22,6 +22,29 @@ tylg     set   Drivr+Objct
 atrv     set   ReEnt+rev
 rev      set   $01
 
+* OS-9 IT.PAR flow control bit settings
+FCMASK	 equ	%00001111	Flow control mask
+FCTXSW	 equ	%00001000	Rx data software (XON/XOFF) flow control
+FCRXSW	 equ	%00000100	Tx data software (XON/XOFF) flow control
+FCCTSRTS equ	%00000010	CTS/RTS hardware flow control
+FCDSRDTR equ	%00000001	DSR/DTR hardware flow control
+* these names are from xACIA
+MdmKill	 equ	%00010000	When DCD drops, "kill" programs using port
+ForceDTR equ	%10000000	Don't drop DTR in Term
+
+* Our own TxFloCtl bit settings
+* Free bits:	%10000000
+TXF.Mask equ	%01110000
+TXF.XOFF equ	%01000000	xon/xoff software control
+TXF.RTS  equ	%00100000	cts/rts hardware control
+TXF.DTR  equ	%00010000	dsr/dtr hybrid control
+* Below are reasons we're _not_ sending
+TXF.NBRK equ	%00001000	Sending break signal
+* For various reasons, these must be identical to the bits in Wrk.Type
+TXF.NXON equ	%00000100	currently waiting for XON
+TXF.NCTS equ	%00000010	waiting for CTS to go back up
+TXF.NDSR equ	%00000001	waiting for DSR to go back up
+
          mod   eom,name,tylg,atrv,start,size
 
 u0000	rmb	V.SCF	($1d)
@@ -46,7 +69,7 @@ u0000	rmb	V.SCF	($1d)
 *	2	V.PDLHd
 *	5	V.RSV
 
-Wrk.Type    rmb   2
+Wrk.Type    rmb   2	upper half parity code, lower half baud rate code
 AltBauds    rmb   1
 u0020    rmb   1
 u0021    rmb   1
@@ -54,7 +77,7 @@ u0022    rmb   1
 u0023    rmb   2
 u0025    rmb   2
 u0027    rmb   1
-u0028    rmb   1
+TxFloCtl    rmb   1
 u0029    rmb   1
 u002A    rmb   2
 u002C    rmb   2
@@ -69,7 +92,7 @@ TxBufEnd    rmb   2	Transmit Buffer Highest Address
 TxBufSta    rmb   2	Transmit Buffer Lowest Address
 TxBufCnt    rmb   1	Number of chars in transmit buffer
 TxBufSiz    rmb   2
-TxNow    rmb   1	if set non-negative, this will be sent before buffer
+TxNow       rmb   1	if set non-negative, this will be sent before buffer
 TxBuffer    rmb   256-.
 size     equ   .
 
@@ -181,16 +204,16 @@ L00A3    pshs  b,a
          lda   UData,x
          lda   LStat,x
          lda   MStat,x
-         anda  #$B0
+         anda  #RCTS!RDCD!RDSR	anything modem has active may be flow ctl
          sta   <u0020
          clrb  
-         bita  #$10
-         bne   L00E2
-         orb   #$02
-L00E2    bita  #$20
-         bne   L00E8
-         orb   #$01
-L00E8    stb   <u0028
+floChk1  bita  #RCTS
+         bne   floChk2
+         orb   #CRTS
+floChk2  bita  #RDSR
+         bne   floChk3
+         orb   #CDTR
+floChk3  stb   <TxFloCtl		controlling DTR and RTS for flow control
          orcc  #IntMasks
          lda   >L0015,pcr
          bmi   L00F5
@@ -299,38 +322,39 @@ L01BB    puls  pc,dp,b,cc
 
 L01BD    pshs  cc
          ldx   <V.PORT
-         ldb   <u0028
-         bitb  #$70
+         ldb   <TxFloCtl
+         bitb  #TXF.Mask	%01110000	XOFF|RTS|DTR
          beq   L01D9
-         bitb  #$20
+         bitb  #TXF.RTS	%00100000	RTS
          beq   L01DB
          orcc  #IntMasks
-         ldb   <u0028
-         andb  #$DF
-         stb   <u0028
+         ldb   <TxFloCtl
+         andb  #^TXF.RTS	%11011111	^RTS
+         stb   <TxFloCtl
          lda   MCtrl,x
          ora   #CRTS
          sta   MCtrl,x
 L01D9    puls  pc,cc	restore ints and return
-L01DB    bitb  #$10
+
+L01DB    bitb  #TXF.DTR	%00010000	DTR
          beq   L01EF
          orcc  #IntMasks
-         ldb   <u0028
-         andb  #$EF
-         stb   <u0028
+         ldb   <TxFloCtl
+         andb  #^TXF.DTR	%11101111	^DTR
+         stb   <TxFloCtl
          lda   MCtrl,x
          ora   #CDTR
          sta   MCtrl,x
          bra   L01D9
-L01EF    bitb  #$40
+L01EF    bitb  #TXF.XOFF	%01000000	XOFF
          beq   L01D9
          ldb   <V.XON
          orcc  #IntMasks
          stb   <TxNow
          lbsr  L0140
-         ldb   <u0028
-         andb  #$BF
-         stb   <u0028
+         ldb   <TxFloCtl
+         andb  #^TXF.XOFF	%10111111	^XOFF
+         stb   <TxFloCtl
          bra   L01D9
 
 ********************
@@ -404,8 +428,8 @@ L0256    cmpa  #$C1
          clra  
          ldb   <TxBufCnt
          std   R$Y,x
-         ldb   <u0028
-         andb  #$07
+         ldb   <TxFloCtl
+         andb  #(TXF.NXON!TXF.NCTS!TXF.NDSR)	why aren't we sending?
          stb   $02,x
          lbra  L0316
 L026F    cmpa  #$D0
@@ -628,11 +652,11 @@ L0441    cmpa  #SS.Break
          bne   L0491
          orcc  #IntMasks
          ldx   <V.PORT
-         lda   <u0028
-         ora   #$08
-         sta   <u0028
-         lda   #$0D
-         sta   $01,x
+         lda   <TxFloCtl
+         ora   #TXF.NBRK	stop transmit, sending break
+         sta   <TxFloCtl
+         lda   #(ELSI!EMSI!ERDA) disable Transmitter Empty interrupt
+         sta   IrEn,x
          clr   <TxBufCnt
          ldd   <TxBufSta
          std   <TxBufPos
@@ -650,23 +674,24 @@ L0464    lda   $05,x
          os9   F$Sleep  
          ldx   <V.PORT
          bra   L0464
-L0476    lda   $03,x
-         ora   #$40
-         sta   $03,x
-         ldx   #$001E
+
+L0476    lda   LCtrl,x
+         ora   #LSBRK		add Send Break bit to line control
+         sta   LCtrl,x
+         ldx   #30		...30 ticks, half a second
          os9   F$Sleep  
          ldx   <V.PORT
-         anda  #$BF
-         sta   $03,x
-         lda   <u0028
-         anda  #$F7
-         sta   <u0028
+         anda  #^LSBRK		Stop sending Break
+         sta   LCtrl,x
+         lda   <TxFloCtl
+         anda  #^TXF.NBRK	no longer sending break, we can transmit again
+         sta   <TxFloCtl
          lbra  L0543
 L0491    cmpa  #$C2
          bne   L04A7
-         ldb   <u0028
+         ldb   <TxFloCtl
          andb  #$F8
-         stb   <u0028
+         stb   <TxFloCtl
          tst   <TxBufCnt
          lbeq  L0543
          lbsr  L0140
@@ -932,50 +957,53 @@ L0697    stx   <u002C
          cmpd  <u002A
          beq   L06A7
 L06A5    puls  pc,b
-L06A7    ldb   <u0028
-         bitb  #$70
+L06A7    ldb   <TxFloCtl
+         bitb  #TXF.Mask	TX flow control mask
          bne   L06A5
          lda   <Wrk.Type
-         bita  #$02
+         bita  #FCCTSRTS	CTS/RTS flow ctl
          beq   L06BF
-         orb   #$20
-         stb   <u0028
+         orb   #TXF.RTS 	enable RTS control
+         stb   <TxFloCtl
          lda   MCtrl,y
-         anda  #^CRTS
+         anda  #^CRTS		stop asserting RTS signal
          sta   MCtrl,y
          bra   L06A5
-L06BF    bita  #$01
+L06BF    bita  #FCDSRDTR	DSR/DTR flow ctl
          beq   L06CF
-         orb   #$10
-         stb   <u0028
+         orb   #TXF.DTR 	enable DTR for flow control
+         stb   <TxFloCtl
          lda   MCtrl,y
-         anda  #^CDTR
+         anda  #^CDTR		drop DTR
          sta   MCtrl,y
          bra   L06A5
-L06CF    bita  #$08
+L06CF    bita  #FCTXSW		XON/XOFF TX flow ctl
          beq   L06A5
-         orb   #$40
-         stb   <u0028
-         lda   <V.XOFF
-         beq   L06A5
-         sta   <TxNow
+         orb   #TXF.XOFF	enable sending XOFF for flow control
+         stb   <TxFloCtl
+         lda   <V.XOFF		Get the character to use for XOFF
+         beq   L06A5		there isn't one, skip it
+         sta   <TxNow		put it at the head of the queue
          ldb   #IrPend!IrId
          stb   IrEn,y
          bra   L06A5
-L06E3    lda   <u0028
-         anda  #$FB
-         sta   <u0028
+
+L06E3    lda   <TxFloCtl
+         anda  #^TXF.XON	No longer waiting for XON
+         sta   <TxFloCtl
          tst   <TxBufCnt
          beq   L06F1
-         lda   #$0F
-         sta   $01,y
+         lda   #ELSI!EMSI!ERDA!ETEMT "Normality restored." (enable ETEMT)
+         sta   IrEn,y
 L06F1    rts   
-L06F2    lda   <u0028
-         ora   #$04
-         sta   <u0028
-         lda   #$0D
-         sta   $01,y
+
+L06F2    lda   <TxFloCtl
+         ora   #TXF.NXON	Start waiting for XON
+         sta   <TxFloCtl
+         lda   #ELSI!EMSI!ERDA	no ETEMT
+         sta   IrEn,y
          rts   
+
 L06FD    pshs  b
          tfr   a,b
          lda   <V.LPRC
@@ -989,19 +1017,19 @@ L0711    rts
 
 temt     ldx   <TxBufPos
          lda   <TxNow
-         ble   L071E
-         sta   ,y
-         anda  #$80
+         ble   L071E		is TxNow <= 0?
+         sta   UData,y		write the byte
+         anda  #$80		clear it
          sta   <TxNow
 L071E    tst   <TxBufCnt
          beq   L0757
-         ldb   <u0028
-         bitb  #$08
-         bne   L0757
-         andb  #$07
-         andb  <Wrk.Type
-         bne   L0757
-         ldb   <TxBufPos+1
+         ldb   <TxFloCtl
+         bitb  #TXF.NBRK	sending break?
+         bne   L0757		yes, don't send
+         andb  #(TXF.NXON!TXF.NCTS!TXF.NDSR)	are we waiting for flow control?
+         andb  <Wrk.Type	Do we care?
+         bne   L0757		yes, don't send
+         ldb   <TxBufPos+1	otherwise, start transmitting
          negb  
          cmpb  #$0F
          bls   L0737
@@ -1028,36 +1056,37 @@ L0757    lda   #ELSI!EMSI!ERDA not ETEMT
 
 mstt     lda   MStat,y
          tfr   a,b
-         andb  #$B0
-         stb   <u0020
-         ldb   <u0028
-         andb  #$FC
-         bita  #$10
-         bne   L076F
-         orb   #$02
-L076F    bita  #$20
-         bne   L0775
-         orb   #$01
-L0775    bita  #$08
-         beq   L07AF
-         bita  #$80
-         bne   L0799
+         andb  #RDCD!RDSR!RCTS	signals we're interested in
+         stb   <u0020		save new mstatus
+         ldb   <TxFloCtl
+         andb  #^(TXF.NCTS!TXF.NDSR)	the bits we might change
+         bita  #RCTS		CTS up?
+         bne   L076F		yes, continue
+         orb   #TXF.NCTS	no, start waiting for it
+L076F    bita  #RDSR		DSR up?
+         bne   L0775		yes, continue
+         orb   #TXF.NDSR	no, wait for it
+L0775    bita  #DDCD		DCD changed?
+         beq   L07AF		no, continue
+         bita  #RDCD		it changed -- is it up now?
+         bne   L0799		branch if it was down, but up now
          lda   <Wrk.Type
-         bita  #$10
-         beq   L0791
-         ldx   <V.PDLHd
-         beq   L0791
-         lda   #$01
-L0789    sta   <$3F,x
-         ldx   <$3D,x
-         bne   L0789
+         bita  #MdmKill 	DCD dropped, report errors?
+         beq   L0791		branch if we don't kill
+         ldx   <V.PDLHd 	Get path descriptor link head
+         beq   L0791		nil, skip
+         lda   #PST.DCD 	path status "DCD lost"
+L0789    sta   <PD.PST,x	set the path status
+         ldx   <PD.PLP,x	link to the next one
+         bne   L0789		if another, loop again
+
 L0791    lda   #$20
          ora   <V.ERR
          sta   <V.ERR
-         andb  #$FB
+         andb  #^TXF.NXON	clear "XOFF" status
 L0799    tst   <u0027
          bne   L07AF
-         stb   <u0028
+         stb   <TxFloCtl
          ldd   <u0023
          tstb  
          beq   L07B1
@@ -1067,7 +1096,7 @@ L0799    tst   <u0027
          clrb  
          std   <u0023
          bra   L07B1
-L07AF    stb   <u0028
+L07AF    stb   <TxFloCtl
 L07B1    lda   #ELSI!EMSI!ERDA!ETEMT
          sta   IrEn,y
          lbra  L0601
