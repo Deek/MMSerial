@@ -230,9 +230,11 @@ L0138    stx   <OutNxt		update next output position
          inc   <TxBufCnt	increment output buffer count
          bsr   L0140
 L013E    puls  pc,dp,b,cc
-L0140    lda   #$0F
+
+L0140    lda   #ELSI!EMSI!ERDA!ETEMT	enable all interrupts
          bra   L0146
-         lda   #$0D
+
+L0144    lda   #ELSI!EMSI!ERDA		enable all BUT empty Tx (unreachable?)
 L0146    ldx   <V.PORT
          sta   IrEn,x
          rts
@@ -871,11 +873,11 @@ L0620    bsr   L0651
 
 rxto     ldx   <u002C
 L0629    lda   LStat,y
-L062B    bita  #$1E
+L062B    bita  #OE!PE!FE!BI
          beq   L0634
          lbsr  L07BF
          bra   L0629
-L0634    bita  #$01
+L0634    bita  #DR
          beq   L063C
 L0638    bsr   L0651
          bra   L0629
@@ -1020,7 +1022,7 @@ L074C    stx   <TxBufPos
          subb  ,s+
          stb   <TxBufCnt
 L0754    lbra  L0601
-L0757    lda   #$0D
+L0757    lda   #ELSI!EMSI!ERDA not ETEMT
          sta   IrEn,y
          bra   L0754
 
@@ -1066,7 +1068,7 @@ L0799    tst   <u0027
          std   <u0023
          bra   L07B1
 L07AF    stb   <u0028
-L07B1    lda   #$0F
+L07B1    lda   #ELSI!EMSI!ERDA!ETEMT
          sta   IrEn,y
          lbra  L0601
 
