@@ -815,10 +815,19 @@ GetDP    pshs  u
          leas  $01,s
          rts   
 
-L05CA    fdb   $0160,$0115,$001b,$01bb,$0004,$0004,$002a
+*		MStt  TEMT  RxAv  rxav  ????  ????  RxTO
+*jtbl    fdb   $0160,$0115,$001b,$01bb,$0004,$0004,$002a
+*		0000  0010  0100  0110  1000  1010  1100
+jtbl	fdb	mstt-jump	Modem Status Change
+	fdb	temt-jump	Transmitter Empty
+	fdb	rxav-jump	Receive Data Available
+	fdb	lstt-jump	Line Status Change
+	fdb	L0601-jump	invalid, ignore & try again
+	fdb	L0601-jump	invalid, ignore & try again
+	fdb	rxto-jump	Receive Data Timeout
 
 * IRQ Service Routine
-IRQRtn   fcb   $5f
+IRQRtn   clrb
 L05D8    pshs  dp,b,cc
          bsr   GetDP
          clr   <u0027
@@ -832,11 +841,11 @@ L05D8    pshs  dp,b,cc
          puls  cc	else return error
          orcc  #Carry
          puls  pc,dp
-L05F4    leax  >L05CA,pcr
-         andb  #$0E
+L05F4    leax  >jtbl,pcr
+         andb  #IrId
          abx   
          tfr   pc,d
-         addd  ,x
+jump     addd  ,x
          tfr   d,pc
 L0601    ldb   IStat,y
          bitb  #IrPend
@@ -850,7 +859,8 @@ L0601    ldb   IStat,y
          anda  #$F7
          sta   $0C,x
 L0616    puls  pc,dp,b,cc
-         ldx   <u002C
+
+rxav     ldx   <u002C
          lda   LStat,y
          bmi   L062B
          ldb   <u0029
@@ -858,7 +868,8 @@ L0620    bsr   L0651
          decb  
          bne   L0620
          bra   L0629
-         ldx   <u002C
+
+rxto     ldx   <u002C
 L0629    lda   LStat,y
 L062B    bita  #$1E
          beq   L0634
@@ -973,7 +984,8 @@ L070A    ldu   <V.DEV2
          beq   L0711
          sta   <V.PAUS,u
 L0711    rts   
-         ldx   <TxBufPos
+
+temt     ldx   <TxBufPos
          lda   <TxNow
          ble   L071E
          sta   ,y
@@ -1011,7 +1023,8 @@ L0754    lbra  L0601
 L0757    lda   #$0D
          sta   IrEn,y
          bra   L0754
-         lda   MStat,y
+
+mstt     lda   MStat,y
          tfr   a,b
          andb  #$B0
          stb   <u0020
@@ -1056,7 +1069,8 @@ L07AF    stb   <u0028
 L07B1    lda   #$0F
          sta   IrEn,y
          lbra  L0601
-         lda   LStat,y
+
+lstt     lda   LStat,y
          bsr   L07BF
          lbra  L0601
 L07BF    pshs  b
