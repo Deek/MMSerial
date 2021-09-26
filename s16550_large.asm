@@ -217,9 +217,9 @@ Write    clrb
 L011D    orcc  #IntMasks	mask interrupts
          cmpx  <TxBufPos	caught up to the read position?
          bne   L0138		nope, still more room
-         pshs  x
-         lbsr  L05AD
-         puls  x
+         pshs  x		buffer full, save our ptr...
+         lbsr  Sleeper		...and block the calling process.
+         puls  x		get our pointer back
          ldu   >D.Proc
          ldb   <P$Signal,u	get pending signal, if any
          beq   L0136		branch if no signal
@@ -252,7 +252,7 @@ Read     clrb
 L0163    orcc  #IntMasks
          ldd   <u0034
          bne   L018F
-L0169    lbsr  L05AD
+L0169    lbsr  Sleeper		go to sleep
          ldx   >D.Proc		we're back! Check on the process
          ldb   P$Signal,x	did it get a signal?
          beq   L0178		signal 0 == S$Kill
@@ -580,7 +580,7 @@ L03D3    leas  $04,s
          lbra  L0543
 L03D8    orcc  #IntMasks
          lbsr  L0140
-         lbsr  L05AD
+         lbsr  Sleeper
          ldx   >$0050
          ldb   <$19,x
          beq   L03EC
@@ -776,7 +776,7 @@ L0566    orcc  #IntMasks
          andb  #$20
          beq   L0585
 L0576    orcc  #IntMasks
-         lbsr  L05AD
+         lbsr  Sleeper
          ldd   $02,s
          std   <u002C
          ldd   ,s
@@ -800,7 +800,7 @@ L0585    leas  $04,s
          puls  y
          puls  pc,dp,b,cc
 
-L05AD    ldd   >D.Proc		current (calling) process
+Sleeper  ldd   >D.Proc		current (calling) process
          sta   <V.WAKE		wake it up when the I/O completes
          tfr   d,x
          lda   P$State,x
