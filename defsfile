@@ -5,3 +5,11 @@ H6309	set 1
 	use scf.d
 	use coco.d
 H6309	set 0
+
+* Additional SIO GetStat/SetStats
+SS.TxBuf	equ	$C1	Get statistics about the Tx buffer
+SS.TxFlR	equ	$C2	Reset (clear) TX software flow control
+SS.TxClr	equ	$C3	Clear transmit buffer contents.
+SS.RdBlk	equ	$D0	Block Read (name changed for compatibility)
+SS.WrBlk	equ	$D1	Block Write (same)
+SS.DvrID	equ	$D2	Serial driver interrogation

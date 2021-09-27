@@ -382,22 +382,24 @@ L01EF    bitb  #TXF.XOFF	%01000000	XOFF
 GetStat  clrb  
          pshs  dp,b,cc
          lbsr  GetDP
-         cmpa  #SS.Ready
-         bne   L0226
+GSReady  cmpa  #SS.Ready
+         bne   GSComSt
          ldd   <RxBufCnt
-         beq   L021E
-         tsta  
-         beq   L0217
-         ldb   #$FF
+         beq   GSNotRdy
+         tsta
+         beq   L0217		if A zero, <= 255 bytes ready
+         ldb   #255		A nonzero, return 255 - highest possible count
 L0217    ldx   PD.RGS,y
          stb   R$B,x
-         lbra  L0316
-L021E    puls  b,cc
+         lbra  GSExit
+
+GSNotRdy puls  b,cc
          orcc  #Carry
-         ldb   #$F6
+         ldb   #E$NotRdy
          puls  pc,dp
-L0226    cmpa  #SS.ComSt
-         bne   L024E
+
+GSComSt  cmpa  #SS.ComSt
+         bne   GSEOF
          ldd   <Wrk.Type
          tst   <AltBauds
          beq   L0236
@@ -414,26 +416,57 @@ L0236    ldx   PD.RGS,y
 L0243    bita  #$20	%00100000 RDSR
          bne   L0249
          orb   #$40
-L0249    stb   $02,x
-         lbra  L0316
-L024E    cmpa  #SS.EOF
-         bne   L0256
+L0249    stb   R$B,x
+         lbra  GSExit
+
+GSEOF    cmpa  #SS.EOF
+         bne   GSTxBuf
          clrb  
-         lbra  L0316
-L0256    cmpa  #$C1
-         bne   L026F
+         lbra  GSExit
+
+********************
+* GSTxBuf
+********************
+* Entry:
+*	A = $C1
+* Exit:
+*	X = Buffer size
+*	Y = Current number of characters waiting to send
+*	B = Transmit flow control status
+*		If zero, nothing preventing transmit
+*		If nonzero, flow control is active & transmitter off
+*
+GSTxBuf  cmpa  #SS.TxBuf
+         bne   GSRdBlk
          ldx   PD.RGS,y
-         ldd   #$00BC
-         std   R$X,x
+         ldd   #(size-TxBuffer)
+         std   R$X,x		return buffer size in X
          clra  
          ldb   <TxBufCnt
-         std   R$Y,x
+         std   R$Y,x		return char count in Y
          ldb   <TxFloCtl
          andb  #(TXF.NXON!TXF.NCTS!TXF.NDSR)	why aren't we sending?
-         stb   $02,x
-         lbra  L0316
-L026F    cmpa  #$D0
-         bne   L02DD
+         stb   R$B,x		return floctl in B
+         lbra  GSExit
+
+********************
+* GSRdBlk
+********************
+* Acts like SS.Ready if there is no data waiting (returning E$NotRdy).
+* If there is data available, reads into passed-in buffer.
+*
+* Entry:
+*	A = $D0
+*	X = Pointer to a buffer in user space
+*	Y = Maximum number of bytes to transfer
+* Exit:
+*	X = Unchanged
+*	Y = Number of bytes actually copied into user buffer
+* Errors:
+*	E$NotRdy or E$Read may be returned in B.
+*
+GSRdBlk  cmpa  #SS.RdBlk
+         bne   GSDvrID
          ldb   <V.ERR
          lbne  L01A6
          orcc  #IntMasks
@@ -442,7 +475,7 @@ L026F    cmpa  #$D0
          cmpd  <RxBufCnt
          bcs   L0288
          ldd   <RxBufCnt
-         beq   L021E
+         beq   GSNotRdy
 L0288    andcc #^IntMasks
          ldu   PD.RGS,y
          cmpd  R$Y,u
@@ -452,14 +485,14 @@ L0293    std   R$Y,u
          beq   L02DB
          pshs  b,a
          pshs  u,y,x
-         std   $02,s
+         std   2,s
          ldd   <u002E
          std   ,s
          ldd   R$X,u
-         std   $04,s
-         ldx   >$0050
-         ldb   $06,x
-         lda   >$00D0
+         std   4,s
+         ldx   >D.Proc
+         ldb   PD.RGS,x
+         lda   >D.SysTsk
          puls  u,y,x
          orcc  #IntMasks
          os9   F$Move   
@@ -480,33 +513,73 @@ L02CD    puls  b,a
          bne   L02D9
          ldx   <RxBufSta
 L02D9    stx   <u002E
-L02DB    bra   L0316
-L02DD    cmpa  #$D2
-         bne   L02F5
-         ldd   #$0B04
-         ldy   $06,y
-         std   $01,y
-         ldd   #$0077
-         std   $06,y
-         ldd   #$0001
-         std   $08,y
-         bra   L0316
-L02F5    cmpa  #SS.ScSiz
-         bne   L030E
-         ldx   $06,y
-         ldy   $03,y
-         ldy   $04,y
+L02DB    bra   GSExit
+
+********************
+* GSDvrID
+********************
+* Interrogates the driver for its capabilities.
+*
+* Entry:
+*	A = $D2
+* Exit:
+*	A = Maximum baud rate code supported
+*		This is not the number of baud rates, but the highest
+*		permitted OS-9 baud rate code (currently $0B)
+*	B = Type of UART supported
+*		$01	6551/6551A
+*		$02	6552
+*		$04	16550 and derivatives
+*	X = Bit field of driver capabilities:
+*		$0001	Supports SS.HngUp (modem hangup via DTR)
+*		$0002	Supports SS.Break (send break signal)
+*		$0004	Supports SS.CDSig (signal on DCD drop)
+*		$0100	Supports SS.RdBlk (block read) command
+*		$0200	Supports SS.WrBlk (block write) command
+*		$0400	Supports SS.TxClr (clear transmit buffer) command
+*	Y = Driver's identification number (this driver returns 1)
+*
+GSDvrID  cmpa  #SS.DvrID
+         bne   GSScSiz
+         ldd   #$0B04		Baud $0B, 16550 chip
+         ldy   PD.RGS,y
+         std   R$D,y
+         ldd   #$0077		This is wrong, docs say it should be $0707
+         std   R$X,y
+         ldd   #$0001		Driver ID #1 (why?)
+         std   R$Y,y
+         bra   GSExit
+
+********************
+* GSScSiz
+********************
+* Reads the screen size from the associated device descriptor.
+*
+* Entry:
+*	A = $26
+* Exit:
+*	X = Columns
+*	Y = Rows
+*
+GSScSiz  cmpa  #SS.ScSiz
+         bne   GSErrEx
+         ldx   PD.RGS,y
+         ldy   PD.DEV,y
+         ldy   V$DESC,y
          clra  
-         ldb   <$2C,y
-         std   $06,x
-         ldb   <$2D,y
-         std   $08,x
-         bra   L0316
-L030E    puls  b,cc
+         ldb   <IT.COL,y
+         std   R$X,x
+         ldb   <IT.ROW,y
+         std   R$Y,x
+         bra   GSExit
+
+GSErrEx  puls b,cc
          orcc  #Carry
-         ldb   #$D0
+         ldb   #E$UnkSvc
          puls  pc,dp
-L0316    puls  pc,dp,b,cc
+
+GSExit    puls  pc,dp,b,cc
+
 L0318    pshs  u
          tfr   b,a
          leau  >L07E3,pcr
@@ -544,79 +617,120 @@ L0318    pshs  u
          stb   <u0029
          puls  pc,u,a,cc
 
+********************
+* SetStat
+********************
+*
+* Entry:
+*	A = Function code
+*	Y = Address of path descriptor
+*	U = Address of device memory area
+*	Other regs depend on func code
+*
+* Exit:
+*	CC = carry set on error, clear on none
+*	B = error code if any
+*	Other regs depend on func code
+*
+* Extra Info:
+*	ANY codes not defined by IOMan or SCF are passed to the device driver.
+*
+*	The address of the registers at the time F$GetStt was called is in
+*	PD.RGS, in the path descriptor (PD.RGS,Y)
+*
+*	From there, R$(CC|D|A|B|DP|X|Y|U|PC) get you the appropriate reg value.
 SetStat  clrb  
          pshs  dp,b,cc
          lbsr  GetDP
-         cmpa  #$D1
-         lbne  L03F5
-         ldu   $06,y
-         ldx   V.TYPE,u
-         ldd   V.PAUS,u
-         pshs  x,b,a
+
+********************
+* SS.WrBlk
+********************
+* Moves data from the caller's specified buffer directly into the driver's
+* transmit buffer. It will Suspend the caller, if necessary, until sufficient
+* free buffer space is available to move all of the data.
+*
+* Entry:
+*	A = path number
+*	X = pointer to user buffer
+*	Y = number of bytes to move
+*
+SSWrBlk  cmpa  #SS.WrBlk
+         lbne  SSComSt
+         ldu   PD.RGS,y 	get the caller's registers
+         ldx   R$X,u
+         ldd   R$Y,u
+         pshs  x,d		save 'em
          beq   L03D3
-L036F    ldd   <TxBufPos
-         cmpd  <TxBufSta
-         bne   L037D
-         ldd   <TxBufEnd
-         subd  #$0001
+L036F    ldd   <TxBufPos	Get current position,
+         cmpd  <TxBufSta	compare against lowest address...
+         bne   L037D		not equal, go do math
+         ldd   <TxBufEnd	(pos==start) get highest address
+         subd  #1		...minus 1
          bra   L0387
-L037D    subd  #$0001
+L037D    subd  #1		(BufPos - 1) - OutNxt
          cmpd  <OutNxt
-         bcc   L0387
-         ldd   <TxBufEnd
+         bcc   L0387		no carry, BufPos past OutNext (space = pos - next)
+         ldd   <TxBufEnd	otherwise, space = end - next
+
 L0387    subd  <OutNxt
-         beq   L03D8
-         cmpd  ,s
-         bls   L0392
-         ldd   ,s
-L0392    pshs  b,a
-         ldx   >$0050
-         lda   $06,x
-         ldb   >$00D0
+* now, D = available _contiguous_ space
+         beq   L03D8		no free space, go to sleep
+         cmpd  ,s		compare against caller's Y
+         bls   L0392		if caller's Y >= available space, keep D
+         ldd   ,s		otherwise use their value
+L0392    pshs  d		count at 0,s, caller's Y at 2,s, their X at 4,s
+         ldx   >D.Proc
+         lda   P$Task,x 	Copying from caller's task...
+         ldb   >D.SysTsk	...to the system task.
+         ldu   <OutNxt		copying to OutNxt, ...
+         ldx   4,s		from caller's X
+         ldy   ,s		copying "count" bytes
+         orcc  #IntMasks	no interruptions, please
+         os9   F$Move		do the move
+         ldd   ,s		get our count back
          ldu   <OutNxt
-         ldx   $04,s
-         ldy   ,s
-         orcc  #IntMasks
-         os9   F$Move   
-         ldd   ,s
-         ldu   <OutNxt
-         leau  d,u
+         leau  d,u		now U = the next OutNxt address?
          cmpu  <TxBufEnd
-         bcs   L03B5
-         ldu   <TxBufSta
-L03B5    stu   <OutNxt
+         bcs   L03B5		if still < TxBufEnd, we good
+         ldu   <TxBufSta	otherwise, we hit the end -- back to start
+L03B5    stu   <OutNxt		save new OutNxt
          clra  
          ldb   <TxBufCnt
-         addd  ,s
+         addd  ,s		add count to buffer byte count
          stb   <TxBufCnt
-         andcc #^IntMasks
-         ldd   ,s
-         ldx   $04,s
-         leax  d,x
-         stx   $04,s
-         ldd   $02,s
-         subd  ,s++
-         std   ,s
-         bne   L036F
-         lbsr  L0140
-L03D3    leas  $04,s
-         lbra  L0543
-L03D8    orcc  #IntMasks
-         lbsr  L0140
-         lbsr  Sleeper
-         ldx   >$0050
-         ldb   <$19,x
-         beq   L03EC
-         cmpb  #$03
-         bls   L03D3
-L03EC    ldb   $0C,x
-         andb  #$02
-         bne   L03D3
-         lbra  L036F
-L03F5    cmpa  #SS.ComSt
-         bne   L0426
-         ldy   $06,y
-         ldd   $08,y
+         andcc #^IntMasks	we can be interrupted now
+         ldd   ,s		get count
+         ldx   4,s		get caller's X
+         leax  d,x		add 'em
+* can ABX be used here?
+         stx   4,s		update caller's X
+         ldd   2,s		get caller's Y (their count)
+         subd  ,s++		subtract previous count, consuming stack
+         std   ,s		save back to caller's Y
+         bne   L036F		if nonzero, back to top of loop
+         lbsr  L0140		otherwise reload A w/ IRQ mask and X w/ V.PORT
+
+L03D3    leas  4,s		restore stack...
+         lbra  SSExit		...and get out of here.
+
+L03D8    orcc  #IntMasks	disable ints
+         lbsr  L0140		reload A w/ int mask, and X w/ V.PORT
+         lbsr  Sleeper		go to sleep waiting
+         ldx   >D.Proc
+         ldb   <P$Signal,x	find out why we woke up
+         beq   L03EC		zero signal, might be dying (or fine)
+         cmpb  #S$Intrpt	was it at least as important as a kbd intr?
+         bls   L03D3		yes, let process deal with it
+L03EC    ldb   P$State,x	get process state
+         andb  #Condem		is it dying?
+         bne   L03D3		if no, return to it
+         lbra  L036F		try again
+
+SSComSt  cmpa  #SS.ComSt
+         bne   SSHangUp
+         ldy   PD.RGS,y
+         ldd   R$Y,y
          tst   <AltBauds
          beq   L0408
          bitb  #$04
@@ -635,9 +749,10 @@ L0408    std   <Wrk.Type
          bitb  #$04
          bne   L0423
          inc   <u0022
-L0423    lbra  L0543
-L0426    cmpa  #SS.HngUp
-         bne   L0441
+L0423    lbra  SSExit
+
+SSHangUp cmpa  #SS.HngUp
+         bne   SSBreak
          ldx   <V.PORT
          lda   MCtrl,x		get current control byte
          pshs  x,a		save port, byte
@@ -647,8 +762,9 @@ L0426    cmpa  #SS.HngUp
          os9   F$Sleep
          puls  x,a		restore modem control
          sta   MCtrl,x
-         lbra  L0543
-L0441    cmpa  #SS.Break
+         lbra  SSExit
+
+SSBreak  cmpa  #SS.Break
          bne   L0491
          orcc  #IntMasks
          ldx   <V.PORT
@@ -663,18 +779,17 @@ L0441    cmpa  #SS.Break
          std   <OutNxt
          lda   <u0021
          ora   #$04
-         sta   $02,x
+         sta   FCtrl,x
          clra  
-         sta   ,x
-L0464    lda   $05,x
-         anda  #$40
-         bne   L0476
-         andcc #^IntMasks
-         ldx   #$0001
+         sta   UData,x
+L0464    lda   LStat,x
+         anda  #TEMT		transmitter empty?
+         bne   L0476		yes, continue
+         andcc #^IntMasks	no, sleep until it is
+         ldx   #1
          os9   F$Sleep  
          ldx   <V.PORT
-         bra   L0464
-
+         bra   L0464		we're back, go back to loop top
 L0476    lda   LCtrl,x
          ora   #LSBRK		add Send Break bit to line control
          sta   LCtrl,x
@@ -686,93 +801,104 @@ L0476    lda   LCtrl,x
          lda   <TxFloCtl
          anda  #^TXF.NBRK	no longer sending break, we can transmit again
          sta   <TxFloCtl
-         lbra  L0543
+         lbra  SSExit
+
 L0491    cmpa  #$C2
-         bne   L04A7
+         bne   SSSSig
          ldb   <TxFloCtl
-         andb  #$F8
+         andb  #^(TXF.NXON!TXF.NCTS!TXF.NDSR) no waiting for XON, CTS, or DSR
          stb   <TxFloCtl
          tst   <TxBufCnt
-         lbeq  L0543
+         lbeq  SSExit
          lbsr  L0140
-         lbra  L0543
-L04A7    cmpa  #$1A
-         bne   L04C4
-         lda   $05,y
-         ldy   $06,y
-         ldb   $07,y
+         lbra  SSExit
+
+SSSSig   cmpa  #SS.SSig
+         bne   SSRelea
+         lda   PD.CPR,y 	get current process
+         ldy   PD.RGS,y 	get caller's regs
+         ldb   R$X+1,y		get low byte of caller's X
          orcc  #IntMasks
          ldx   <RxBufCnt
          bne   L04BD
          std   <u0025
-         lbra  L0543
+         lbra  SSExit
+
 L04BD    puls  cc
          os9   F$Send   
          puls  pc,dp,b
-L04C4    cmpa  #SS.Relea
-         bne   L04D5
-         lda   $05,y
+
+SSRelea  cmpa  #SS.Relea
+         bne   SSCDSig
+         lda   PD.CPR,y 	get current process
          cmpa  <u0025
          bne   L04D2
          clra  
          clrb  
          std   <u0025
-L04D2    lbra  L0543
-L04D5    cmpa  #SS.CDSig
-         bne   L04E4
-         lda   $05,y
-         ldy   $06,y
-         ldb   $07,y
+L04D2    lbra  SSExit
+
+SSCDSig  cmpa  #SS.CDSig
+         bne   SSCDRel
+         lda   PD.CPR,y 	get current process
+         ldy   PD.RGS,y 	get caller's regs
+         ldb   R$X+1,y		low byte of X is the signal
          std   <u0023
-         bra   L0543
-L04E4    cmpa  #SS.CDRel
-         bne   L04F6
+         bra   SSExit
+
+SSCDRel  cmpa  #SS.CDRel
+         bne   SSClose
          orcc  #IntMasks
-         lda   $05,y
+         lda   PD.CPR,y
          cmpa  <u0023
          bne   L04F4
          clra  
          clrb  
          std   <u0023
-L04F4    bra   L0543
-L04F6    cmpa  #SS.Close
+L04F4    bra   SSExit
+
+SSClose  cmpa  #SS.Close
          lbne  L0511
          orcc  #IntMasks
-         lda   $05,y
-         ldx   #$0000
+         lda   PD.CPR,y
+         ldx   #0
          cmpa  <u0025
          bne   L0509
          stx   <u0025
 L0509    cmpa  <u0023
          bne   L050F
          stx   <u0023
-L050F    bra   L0543
+L050F    bra   SSExit
+
 L0511    cmpa  #$C3
-         bne   L052B
+         bne   SSOpen
          orcc  #IntMasks
-         ldb   #$0D
-         stb   $01,x
+         ldb   #(ELSI!EMSI!ERDA) no ETEMT
+         stb   IrEn,x
          ldd   <TxBufSta
          std   <OutNxt
          std   <TxBufPos
          clr   <TxBufCnt
          ldb   <u0021
          orb   #$04
-         stb   $02,x
-         bra   L0543
-L052B    cmpa  #SS.Open
-         bne   L053B
+         stb   IStat,x
+         bra   SSExit
+
+SSOpen   cmpa  #SS.Open
+         bne   SSErrEx
          ldx   <V.PORT
-         lda   #$03
-         sta   $04,x
-         ldb   #$0F
-         stb   $01,x
-         bra   L0543
-L053B    puls  b,cc
+         lda   #(CDTR!CRTS)		assert DTR & RTS
+         sta   MCtrl,x
+         ldb   #(ELSI!EMSI!ERDA!ETEMT)	enable all interrupts
+         stb   IrEn,x
+         bra   SSExit
+
+SSErrEx  puls  b,cc
          orcc  #Carry
-         ldb   #$D0
+         ldb   #E$UnkSvc	Return Unknown Service error
          puls  pc,dp
-L0543    puls  pc,dp,b,cc
+
+SSExit   puls  pc,dp,b,cc
 
 Term     clrb  
          pshs  dp,b,cc
